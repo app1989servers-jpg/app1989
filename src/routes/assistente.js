@@ -2,6 +2,7 @@ const express = require('express')
 const router  = express.Router()
 const { supabaseAdmin } = require('../config/supabase')
 const { autenticar, exigirPerfil } = require('../middleware/auth')
+const { loadKnowledge } = require('../knowledge')
 
 router.post('/chat', autenticar, exigirPerfil('proprietario', 'gerente', 'colaborador'), async (req, res) => {
   try {
@@ -299,16 +300,31 @@ ${(rReativar.data||[]).slice(0,10).map(c=>`- ${c.nome}: ${Math.round(c.dias_ause
 8. Scripts prontos para campanhas de reativação e upsell`
     }
 
+    // ---- Carrega base de conhecimento ----
+    const knowledge = await loadKnowledge(supabaseAdmin)
+    const contextoFinal = contexto + `
+
+=== BASE DE CONHECIMENTO — USE PARA ENRIQUECER SUAS RESPOSTAS ===
+${knowledge}
+
+INSTRUÇÕES DE USO DO CONHECIMENTO:
+- Use estas metodologias para embasar TODAS as suas sugestões
+- Quando propuser uma ação, cite a lógica por trás (ex: "Segundo a metodologia de retenção, cliente que retorna em 21 dias...")
+- Adapte o conhecimento à realidade da Barbearia 1989 e Montenegro/RS
+- Seja prático: conhecimento sem ação não tem valor
+- Sempre termine com 1-3 ações concretas que podem ser feitas hoje ou esta semana
+`
+
     // ---- Chama GPT-3.5-turbo ----
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY },
       body: JSON.stringify({
         model: 'gpt-3.5-turbo',
-        max_tokens: 800,
-        temperature: 0.5,
+        max_tokens: 1000,
+        temperature: 0.6,
         messages: [
-          { role: 'system', content: contexto },
+          { role: 'system', content: contextoFinal },
           ...historico.slice(-8),
           { role: 'user', content: mensagem }
         ]
