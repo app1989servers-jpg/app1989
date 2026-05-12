@@ -9,12 +9,11 @@ const app = express()
 // ============================================================
 app.use(cors({
   origin: [
-  'https://app.barbearia1989.com.br',
-  'https://app1989.pages.dev',
-  'http://localhost:3000',
-  'http://localhost:5500',
-  '*'
-],
+    'http://localhost:3000',
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
+    process.env.FRONTEND_URL || '*'
+  ],
   credentials: true
 }))
 
@@ -36,8 +35,9 @@ app.use('/auth',         require('./routes/auth'))
 app.use('/agendamentos', require('./routes/agendamentos'))
 app.use('/comandas',     require('./routes/comandas'))
 app.use('/financeiro',   require('./routes/financeiro'))
-app.use('/relatorios',   require('./routes/financeiro')) // mesmo arquivo, prefixo diferente
-app.use('/',             require('./routes/cadastros'))  // /unidades, /colaboradores, etc.
+app.use('/relatorios',   require('./routes/financeiro'))
+app.use('/assistente',   require('./routes/assistente'))
+app.use('/',             require('./routes/cadastros'))
 
 // Rota de health check
 app.get('/health', (_req, res) => {
