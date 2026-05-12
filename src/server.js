@@ -9,11 +9,11 @@ const app = express()
 // ============================================================
 app.use(cors({
   origin: [
-    'http://localhost:3000',
-    'http://localhost:5500',
-    'http://127.0.0.1:5500',
-    process.env.FRONTEND_URL || '*'
-  ],
+  'https://app.barbearia1989.com.br',
+  'https://app1989.pages.dev',
+  'http://localhost:3000',
+  '*'
+],
   credentials: true
 }))
 
