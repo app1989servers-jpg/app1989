@@ -381,6 +381,61 @@ router.post('/metas', autenticar, ADMIN, async (req, res) => {
 // #9 NÍVEL DO BARBEIRO
 // ============================================================
 
+// GET /colaboradores-todos — todos os colaboradores com unidade (para cadastros)
+router.get('/colaboradores-todos', autenticar, exigirPerfil('proprietario','gerente'), async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('colaboradores')
+      .select('id, nome, email, whatsapp, perfil, comissao_pct, ativo, unidade_id, unidades(nome)')
+      .eq('ativo', true)
+      .order('nome')
+    if (error) throw error
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar colaboradores' })
+  }
+})
+
+// GET /clientes — lista clientes com paginação
+router.get('/clientes', autenticar, async (req, res) => {
+  try {
+    const limit  = parseInt(req.query.limit) || 50
+    const offset = parseInt(req.query.offset) || 0
+    const busca  = req.query.q || ''
+    let query = supabaseAdmin
+      .from('clientes')
+      .select('id, nome, email, whatsapp, cpf, ativo, unidade_pref, unidades:unidade_pref(nome), carteira_pontos(saldo)', { count: 'exact' })
+      .eq('ativo', true)
+      .order('nome')
+      .range(offset, offset + limit - 1)
+    if (busca) query = query.ilike('nome', '%' + busca + '%')
+    const { data, error, count } = await query
+    if (error) throw error
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar clientes' })
+  }
+})
+
+// GET /colaboradores — lista colaboradores por unidade
+router.get('/colaboradores', autenticar, async (req, res) => {
+  try {
+    const { unidade_id } = req.query
+    let query = supabaseAdmin
+      .from('colaboradores')
+      .select('id, nome, perfil, unidade_id')
+      .eq('ativo', true)
+      .in('perfil', ['colaborador', 'gerente'])
+      .order('nome')
+    if (unidade_id) query = query.eq('unidade_id', unidade_id)
+    const { data, error } = await query
+    if (error) throw error
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar colaboradores' })
+  }
+})
+
 router.put('/colaboradores/:id/nivel', autenticar, ADMIN, async (req, res) => {
   try {
     const { nivel } = req.body
