@@ -15,12 +15,28 @@ router.get('/dashboard/metricas', autenticar, async (req, res) => {
     const fimHoje    = new Date(hoje.setHours(23,59,59,999)).toISOString()
     const inicioMes  = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString()
 
-    // Busca colaborador logado
-    const { data: colab } = await supabaseAdmin
+    // Busca colaborador logado — tenta por user_id (Supabase Auth) ou id direto
+    console.log('[dashboard] usuario:', JSON.stringify(usuario))
+    let colab = null
+    
+    // Tenta pelo user_id do Supabase Auth
+    const { data: c1 } = await supabaseAdmin
       .from('colaboradores')
       .select('id, nome, perfil, unidade_id, unidades(id, nome)')
       .eq('user_id', usuario.id)
       .single()
+    
+    if (c1) {
+      colab = c1
+    } else {
+      // Tenta pelo id direto da tabela colaboradores
+      const { data: c2 } = await supabaseAdmin
+        .from('colaboradores')
+        .select('id, nome, perfil, unidade_id, unidades(id, nome)')
+        .eq('id', usuario.id)
+        .single()
+      colab = c2
+    }
 
     if (!colab) return res.status(404).json({ erro: 'Colaborador não encontrado' })
 
