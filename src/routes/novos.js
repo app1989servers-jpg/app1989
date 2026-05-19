@@ -585,4 +585,77 @@ router.get('/agendamentos/pode-cancelar/:id', autenticar, async (req, res) => {
   }
 })
 
+// ============================================================
+// IMPORTAÇÃO DE HISTÓRICO DE SERVIÇOS
+// ============================================================
+
+router.post('/historico-servicos', autenticar, exigirPerfil('proprietario'), async (req, res) => {
+  try {
+    const { unidade_slug, servico_nome, cliente_nome, cliente_fone, profissional, data, valor, forma_pgto, pontos, status } = req.body
+
+    // Busca unidade
+    const unidadeMap = { timbauva: 'Unidade Timbaúva', centro: 'Unidade Centro', saojoao: 'Unidade São João' }
+    const { data: unidade } = await supabaseAdmin.from('unidades').select('id').eq('nome', unidadeMap[unidade_slug] || unidade_slug).single()
+    if (!unidade) return res.status(404).json({ erro: 'Unidade não encontrada' })
+
+    // Busca ou cria cliente
+    let cliente_id = null
+    if (cliente_fone) {
+      const fone = cliente_fone.replace(/\D/g,'').slice(-11)
+      const { data: cli } = await supabaseAdmin.from('clientes').select('id').eq('whatsapp', fone).single()
+      if (cli) cliente_id = cli.id
+    }
+    if (!cliente_id && cliente_nome) {
+      const { data: cli } = await supabaseAdmin.from('clientes').select('id').ilike('nome', cliente_nome).single()
+      if (cli) cliente_id = cli.id
+    }
+
+    // Busca colaborador
+    let colaborador_id = null
+    if (profissional) {
+      const { data: col } = await supabaseAdmin.from('colaboradores').select('id').ilike('nome', `%${profissional}%`).eq('unidade_id', unidade.id).single()
+      if (col) colaborador_id = col.id
+    }
+
+    // Busca serviço
+    let servico_id = null
+    if (servico_nome) {
+      const { data: svc } = await supabaseAdmin.from('servicos').select('id').ilike('nome', `%${servico_nome}%`).single()
+      if (svc) servico_id = svc.id
+    }
+
+    // Converte data
+    let data_hora = null
+    if (data) {
+      try {
+        const d = new Date(data)
+        data_hora = isNaN(d) ? null : d.toISOString()
+      } catch { data_hora = null }
+    }
+
+    // Converte status
+    const statusMap = { 'Concluído': 'concluido', 'Cancelado': 'cancelado', 'Não compareceu': 'nao_compareceu' }
+    const status_norm = statusMap[status] || 'concluido'
+
+    // Insere no histórico
+    await supabaseAdmin.from('historico_atendimentos').insert({
+      unidade_id:     unidade.id,
+      cliente_id,
+      colaborador_id,
+      servico_id,
+      data_hora_ini:  data_hora,
+      valor:          parseFloat(valor) || 0,
+      forma_pgto:     (forma_pgto || '').toLowerCase().replace(/\s/g,'_'),
+      status:         status_norm,
+      pontos_gerados: parseInt(pontos) || 0,
+      origem:         'importacao_appbarber'
+    })
+
+    return res.status(201).json({ ok: true })
+  } catch (err) {
+    console.error('[importacao]', err)
+    return res.status(500).json({ erro: 'Erro ao importar registro' })
+  }
+})
+
 module.exports = router
