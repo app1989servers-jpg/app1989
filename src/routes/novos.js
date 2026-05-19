@@ -381,6 +381,30 @@ router.post('/metas', autenticar, ADMIN, async (req, res) => {
 // #9 NÍVEL DO BARBEIRO
 // ============================================================
 
+// GET /servicos
+router.get('/servicos', autenticar, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('servicos').select('*').eq('ativo', true).order('nome')
+    if (error) throw error
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar serviços' })
+  }
+})
+
+// GET /produtos
+router.get('/produtos', autenticar, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('produtos').select('*').eq('ativo', true).order('nome')
+    if (error) throw error
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar produtos' })
+  }
+})
+
 // GET /colaboradores-todos — todos os colaboradores com unidade (para cadastros)
 router.get('/colaboradores-todos', autenticar, exigirPerfil('proprietario','gerente'), async (req, res) => {
   try {
