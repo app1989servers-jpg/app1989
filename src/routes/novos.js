@@ -421,6 +421,32 @@ router.put('/colaboradores/:id', autenticar, ADM_GER, async (req, res) => {
   }
 })
 
+// GET /dashboard/agenda-dia — agenda de qualquer data
+router.get('/dashboard/agenda-dia', autenticar, async (req, res) => {
+  try {
+    const { data, unidade_id } = req.query
+    const dia = data || new Date().toISOString().split('T')[0]
+    const inicio = dia + 'T00:00:00Z'
+    const fim    = dia + 'T23:59:59Z'
+
+    const { data: colab } = await supabaseAdmin
+      .from('colaboradores').select('id,perfil,unidade_id').eq('user_id', req.usuario.id).single()
+
+    let q = supabaseAdmin.from('agendamentos')
+      .select('id,data_hora_ini,data_hora_fim,status,valor,clientes(id,nome),servicos(nome),colaboradores(id,nome)')
+      .gte('data_hora_ini', inicio).lte('data_hora_ini', fim).order('data_hora_ini')
+
+    if(unidade_id) q = q.eq('unidade_id', unidade_id)
+    else if(colab && colab.perfil === 'colaborador') q = q.eq('colaborador_id', colab.id)
+    else if(colab && colab.unidade_id) q = q.eq('unidade_id', colab.unidade_id)
+
+    const { data: agenda } = await q
+    return res.json(agenda || [])
+  } catch(err) {
+    return res.status(500).json({ erro: 'Erro ao buscar agenda' })
+  }
+})
+
 // GET /unidades
 router.get('/unidades', autenticar, async (req, res) => {
   try {
