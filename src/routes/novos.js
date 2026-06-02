@@ -371,17 +371,62 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
-// POST /agendamentos/bloquear — bloquear horário na agenda
+// PATCH /agendamentos/:id — atualizar status (cancelar, etc)
+router.patch('/agendamentos/:id', autenticar, async (req, res) => {
+  try {
+    const { status } = req.body
+    const { data, error } = await supabaseAdmin
+      .from('agendamentos').update({ status }).eq('id', req.params.id).select().single()
+    if (error) throw error
+    return res.json(data)
+  } catch (err) {
+    console.error('[PATCH agendamento]', err.message)
+    return res.status(500).json({ erro: err.message })
+  }
+})
+
+// POST /agendamentos/bloquear — bloquear horário na agenda (usa tabela folgas)
 router.post('/agendamentos/bloquear', autenticar, async (req, res) => {
   try {
-    const { colaborador_id, data_hora_ini, data_hora_fim, unidade_id } = req.body
-    const { data, error } = await supabaseAdmin.from('agendamentos').insert({
+    const { colaborador_id, data_hora_ini, data_hora_fim, tipo } = req.body
+    if (!colaborador_id) return res.status(400).json({ erro: 'colaborador_id obrigatório' })
+
+    const data_folga = (data_hora_ini || new Date().toISOString()).split('T')[0]
+
+    // Determina período com base nos horários
+    let periodo = 'dia_todo'
+    if (data_hora_ini && data_hora_fim) {
+      const iniH = new Date(data_hora_ini).getHours()
+      const fimH = new Date(data_hora_fim).getHours()
+      if (fimH <= 12) periodo = 'manha'
+      else if (iniH >= 12) periodo = 'tarde'
+      else periodo = 'dia_todo'
+    }
+    if (tipo === 'slot')  periodo = 'horario'
+    if (tipo === 'manha') periodo = 'manha'
+    if (tipo === 'tarde') periodo = 'tarde'
+    if (tipo === 'dia')   periodo = 'dia_todo'
+
+    // Busca unidade do colaborador
+    const { data: colab } = await supabaseAdmin
+      .from('colaboradores').select('unidade_id').eq('id', colaborador_id).single()
+
+    const payload = {
       colaborador_id,
-      data_hora_ini,
-      data_hora_fim,
-      unidade_id: unidade_id || null,
-      status: 'bloqueado'
-    }).select().single()
+      data_folga,
+      periodo,
+      unidade_id: colab?.unidade_id || null,
+      status: 'aprovada',
+      obs: 'Bloqueio manual via agenda'
+    }
+
+    // Para bloqueio de slot específico, guarda horário no obs
+    if (tipo === 'slot' && data_hora_ini) {
+      payload.obs = 'Bloqueio slot: ' + data_hora_ini + ' — ' + (data_hora_fim || '')
+      payload.periodo = 'horario'
+    }
+
+    const { data, error } = await supabaseAdmin.from('folgas').insert(payload).select().single()
     if (error) throw error
     return res.status(201).json(data)
   } catch (err) {
