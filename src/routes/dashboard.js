@@ -84,16 +84,18 @@ router.get('/dashboard/metricas', autenticar, async (req, res) => {
     // ---- Agenda do dia ----
     let qAgenda = supabaseAdmin
       .from('agendamentos')
-      .select('id, data_hora_ini, data_hora_fim, status, valor, clientes(id, nome, data_nasc), servicos(nome), colaboradores(id, nome)')
+      .select('id, data_hora_ini, data_hora_fim, status, valor, clientes(id, nome, data_nasc), servicos(nome), colaboradores(id, nome, unidade_id, unidades(nome))')
       .gte('data_hora_ini', inicioHoje)
       .lte('data_hora_ini', fimHoje)
+      .not('status', 'eq', 'cancelado')
       .order('data_hora_ini')
 
     if (perfil === 'colaborador') {
       qAgenda = qAgenda.eq('colaborador_id', colab.id)
-    } else if (perfil !== 'proprietario') {
+    } else if (perfil === 'gerente' && unidade_id) {
       qAgenda = qAgenda.eq('unidade_id', unidade_id)
     }
+    // proprietario e caixa: veem todos sem filtro de unidade
 
     const { data: agenda } = await qAgenda
     result.agenda = agenda || []
