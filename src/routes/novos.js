@@ -241,9 +241,18 @@ router.post('/comandas/:id/unificar', autenticar, async (req, res) => {
 // ============================================================
 router.post('/agendamentos', autenticar, async (req, res) => {
   try {
-    const itens = req.body.itens // array de { servico_id, colaborador_id, data_hora_ini, nome_acompanhante? }
-    const { cliente_id, unidade_id } = req.body
-    if (!itens || !itens.length) return res.status(400).json({ erro: 'Informe ao menos 1 serviço' })
+    const { cliente_id, cliente_nome, sem_cadastro, unidade_id } = req.body
+
+    // Aceita formato flat (campos diretos) ou formato itens (array)
+    let itens = req.body.itens
+    if (!itens || !itens.length) {
+      // Tenta montar itens a partir dos campos flat
+      const { colaborador_id, servico_id, data_hora_ini, nome_acompanhante } = req.body
+      if (!colaborador_id || !servico_id || !unidade_id || !data_hora_ini) {
+        return res.status(400).json({ erro: 'Campos obrigatórios: colaborador_id, servico_id, unidade_id, data_hora_ini' })
+      }
+      itens = [{ colaborador_id, servico_id, data_hora_ini, nome_acompanhante }]
+    }
 
     const inserted = []
     for (const item of itens) {
