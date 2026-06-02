@@ -52,10 +52,11 @@ router.get('/dashboard/metricas', autenticar, async (req, res) => {
         .select('id, status, valor, colaborador_id, data_hora_ini')
         .gte('data_hora_ini', inicioHoje)
         .lte('data_hora_ini', fimHoje)
+        .not('status', 'in', '("cancelado","bloqueado")')
       if (uid) qAgend = qAgend.eq('unidade_id', uid)
       const { data: agends } = await qAgend
 
-      const total      = agends?.length || 0
+      const total = agends?.filter(a => ['agendado','confirmado','concluido','nao_compareceu'].includes(a.status)).length || 0
       const finalizados = agends?.filter(a => a.status === 'concluido').length || 0
       const pendentes   = agends?.filter(a => ['agendado','confirmado'].includes(a.status)).length || 0
       const faturamento = agends?.filter(a => a.status === 'concluido').reduce((s,a) => s + (parseFloat(a.valor)||0), 0) || 0
