@@ -377,7 +377,7 @@ router.delete('/agendamentos/:id', autenticar, async (req, res) => {
     const { error } = await supabaseAdmin
       .from('agendamentos').delete().eq('id', req.params.id)
     if (error) throw error
-    return res.status(204).send()
+    return res.status(200).json({ ok: true })
   } catch (err) {
     console.error('[DELETE agendamento]', err.message)
     return res.status(500).json({ erro: err.message })
