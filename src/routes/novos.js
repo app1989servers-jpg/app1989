@@ -362,6 +362,25 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
+// POST /agendamentos/bloquear — bloquear horário na agenda
+router.post('/agendamentos/bloquear', autenticar, async (req, res) => {
+  try {
+    const { colaborador_id, data_hora_ini, data_hora_fim, motivo } = req.body
+    const { data, error } = await supabaseAdmin.from('agendamentos').insert({
+      colaborador_id,
+      data_hora_ini,
+      data_hora_fim,
+      status: 'bloqueado',
+      observacoes: motivo || 'Bloqueio manual'
+    }).select().single()
+    if (error) throw error
+    return res.status(201).json(data)
+  } catch (err) {
+    console.error('[bloquear slot]', err.message)
+    return res.status(500).json({ erro: err.message || 'Erro ao bloquear' })
+  }
+})
+
 // POST /colaboradores — criar novo colaborador
 router.post('/colaboradores', autenticar, ADM_GER, async (req, res) => {
   try {
@@ -435,12 +454,28 @@ router.get('/clientes', autenticar, async (req, res) => {
   try {
     const limit  = parseInt(req.query.limit) || 50
     const offset = parseInt(req.query.offset) || 0
-    const busca  = req.query.q || ''
-    let q = supabaseAdmin.from('clientes').select('id,nome,email,whatsapp,cpf,ativo,unidade_pref,unidades:unidade_pref(nome),carteira_pontos(saldo)', { count: 'exact' }).eq('ativo', true).order('nome').range(offset, offset + limit - 1)
-    if (busca) q = q.ilike('nome', '%' + busca + '%')
-    const { data } = await q
+    const busca  = (req.query.q || '').trim()
+
+    let q = supabaseAdmin
+      .from('clientes')
+      .select('id,nome,email,whatsapp,cpf,ativo,carteira_pontos(saldo)')
+      .eq('ativo', true)
+      .order('nome')
+
+    if (busca) {
+      // Filtra por nome OU whatsapp
+      q = q.or(`nome.ilike.%${busca}%,whatsapp.ilike.%${busca}%`)
+    }
+
+    q = q.range(offset, offset + limit - 1)
+
+    const { data, error } = await q
+    if (error) throw error
     return res.json(data || [])
-  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
+  } catch (err) {
+    console.error('[clientes]', err.message)
+    return res.status(500).json({ erro: 'Erro ao buscar clientes' })
+  }
 })
 
 router.get('/colaboradores', autenticar, async (req, res) => {
