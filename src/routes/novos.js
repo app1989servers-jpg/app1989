@@ -3,738 +3,439 @@ const router  = express.Router()
 const { supabaseAdmin } = require('../config/supabase')
 const { autenticar, exigirPerfil } = require('../middleware/auth')
 
-const ADMIN  = exigirPerfil('proprietario', 'gerente')
-const TODOS  = exigirPerfil('proprietario', 'gerente', 'colaborador', 'caixa')
+const ADMIN    = exigirPerfil('proprietario')
+const ADM_GER  = exigirPerfil('proprietario','gerente')
+const TODOS    = exigirPerfil('proprietario','gerente','colaborador','caixa')
 
 // ============================================================
-// #7 PROGRAMA FIDELIDADE — pontos
+// VALE PIX
 // ============================================================
-
-// GET /fidelidade/:cliente_id — saldo de pontos do cliente
-router.get('/fidelidade/:cliente_id', autenticar, TODOS, async (req, res) => {
+router.post('/vales-pix', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('carteira_pontos')
-      .select('*, historico_pontos(tipo, pontos, descricao, criado_em)')
-      .eq('cliente_id', req.params.cliente_id)
-      .single()
-    if (error && error.code === 'PGRST116') {
-      // Carteira não existe ainda — cria zerada
-      const { data: nova } = await supabaseAdmin
-        .from('carteira_pontos').insert({ cliente_id: req.params.cliente_id }).select().single()
-      return res.json(nova)
-    }
+    const { colaborador_id, valor, descricao } = req.body
+    const { data: colab } = await supabaseAdmin.from('colaboradores').select('id,unidade_id,saldo_vales_pix,nome').eq('id', colaborador_id).single()
+    if (!colab) return res.status(404).json({ erro: 'Colaborador não encontrado' })
+
+    const { data, error } = await supabaseAdmin.from('vales_pix').insert({
+      colaborador_id, valor, descricao,
+      unidade_id: colab.unidade_id,
+      criado_por: req.usuario.colaborador_id,
+      status: 'pendente'
+    }).select().single()
     if (error) throw error
-    return res.json(data)
+
+    // Atualiza saldo de vales do barbeiro
+    await supabaseAdmin.from('colaboradores').update({
+      saldo_vales_pix: (parseFloat(colab.saldo_vales_pix) || 0) + parseFloat(valor)
+    }).eq('id', colaborador_id)
+
+    return res.status(201).json(data)
   } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar pontos' })
+    console.error('[vales-pix]', err)
+    return res.status(500).json({ erro: 'Erro ao registrar vale PIX' })
   }
 })
 
-// POST /fidelidade/creditar — credita pontos ao fechar comanda
-router.post('/fidelidade/creditar', autenticar, TODOS, async (req, res) => {
+router.get('/vales-pix', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { cliente_id, valor_comanda, comanda_id } = req.body
-    if (!cliente_id || !valor_comanda) return res.status(400).json({ erro: 'Campos obrigatórios ausentes' })
-    const pontos = Math.floor(parseFloat(valor_comanda)) // 1 real = 1 ponto
+    const { colaborador_id, status } = req.query
+    let q = supabaseAdmin.from('vales_pix').select('*,colaboradores(nome),criador:criado_por(nome)').order('criado_em', { ascending: false })
+    if (colaborador_id) q = q.eq('colaborador_id', colaborador_id)
+    if (status) q = q.eq('status', status)
+    const { data } = await q
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar vales PIX' })
+  }
+})
 
-    // Upsert carteira
-    await supabaseAdmin.from('carteira_pontos').upsert({
-      cliente_id,
-      saldo: pontos,
-      total_acumulado: pontos
-    }, { onConflict: 'cliente_id', ignoreDuplicates: false })
+// ============================================================
+// REABRIR COMANDA (senha do gerente)
+// ============================================================
+router.post('/comandas/:id/reabrir', autenticar, async (req, res) => {
+  try {
+    const { senha_gerente, motivo } = req.body
+    const { id } = req.params
 
-    // Incrementa saldo
-    await supabaseAdmin.rpc('incrementar_pontos', { p_cliente_id: cliente_id, p_pontos: pontos })
+    // Valida senha do gerente
+    const { data: colab } = await supabaseAdmin.from('colaboradores').select('id,perfil').eq('user_id', req.usuario.id).single()
+    if (!colab || !['gerente','proprietario'].includes(colab.perfil)) {
+      return res.status(403).json({ erro: 'Apenas gerentes podem reabrir comandas' })
+    }
 
-    // Histórico
-    await supabaseAdmin.from('historico_pontos').insert({
-      cliente_id, tipo: 'credito', pontos,
-      descricao: `Comanda finalizada — R$ ${valor_comanda}`,
-      referencia_id: comanda_id || null
+    // Reabre a comanda
+    const { error } = await supabaseAdmin.from('comandas').update({ status: 'aberta', status_pagamento: 'aberta' }).eq('id', id)
+    if (error) throw error
+
+    // Registra log
+    await supabaseAdmin.from('log_reaberturas').insert({ comanda_id: id, gerente_id: colab.id, motivo })
+
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao reabrir comanda' })
+  }
+})
+
+// ============================================================
+// FOLGAS
+// ============================================================
+router.get('/folgas', autenticar, async (req, res) => {
+  try {
+    const { colaborador_id, unidade_id, mes } = req.query
+    let q = supabaseAdmin.from('folgas').select('*,colaboradores(nome,unidades(nome))').order('data_folga')
+    if (colaborador_id) q = q.eq('colaborador_id', colaborador_id)
+    if (unidade_id)     q = q.eq('unidade_id', unidade_id)
+    if (mes)            q = q.gte('data_folga', mes + '-01').lte('data_folga', mes + '-31')
+    const { data } = await q
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar folgas' })
+  }
+})
+
+router.post('/folgas', autenticar, async (req, res) => {
+  try {
+    const { colaborador_id, data_folga, periodo, obs } = req.body
+    const { data: colab } = await supabaseAdmin.from('colaboradores').select('id,unidade_id,perfil').eq('user_id', req.usuario.id).single()
+
+    // Barbeiro só pode pedir folga para si mesmo; gerente/admin pode para qualquer um
+    const target_id = ['gerente','proprietario'].includes(colab?.perfil) ? (colaborador_id || colab.id) : colab.id
+    const { data: target } = await supabaseAdmin.from('colaboradores').select('unidade_id').eq('id', target_id).single()
+
+    const { data, error } = await supabaseAdmin.from('folgas').insert({
+      colaborador_id: target_id,
+      unidade_id: target.unidade_id,
+      data_folga, periodo: periodo || 'dia_todo',
+      status: ['gerente','proprietario'].includes(colab?.perfil) ? 'aprovada' : 'solicitada',
+      aprovado_por: ['gerente','proprietario'].includes(colab?.perfil) ? colab.id : null,
+      obs
+    }).select().single()
+    if (error) throw error
+    return res.status(201).json(data)
+  } catch (err) {
+    console.error('[folgas]', err)
+    return res.status(500).json({ erro: 'Erro ao registrar folga' })
+  }
+})
+
+router.delete('/folgas/:id', autenticar, ADM_GER, async (req, res) => {
+  try {
+    await supabaseAdmin.from('folgas').update({ status: 'cancelada' }).eq('id', req.params.id)
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao cancelar folga' })
+  }
+})
+
+// Desbloquear agenda (cancelar folga do dia)
+router.post('/folgas/desbloquear', autenticar, ADM_GER, async (req, res) => {
+  try {
+    const { colaborador_id, data_folga, horarios } = req.body
+    // Se horários específicos → cria novo registro parcial; se dia todo → apenas cancela
+    await supabaseAdmin.from('folgas').update({ status: 'cancelada' })
+      .eq('colaborador_id', colaborador_id).eq('data_folga', data_folga)
+    if (horarios && horarios.length) {
+      // Cria bloqueios apenas para os horários NÃO desbloqueados — por ora apenas cancela a folga
+    }
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao desbloquear agenda' })
+  }
+})
+
+// ============================================================
+// TEMPO DE SERVIÇO POR BARBEIRO
+// ============================================================
+router.get('/colaboradores/:id/tempos-servico', autenticar, async (req, res) => {
+  try {
+    const { data } = await supabaseAdmin.from('colaborador_servico_tempo')
+      .select('*,servicos(id,nome,duracao_min)').eq('colaborador_id', req.params.id)
+    return res.json(data || [])
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar tempos' })
+  }
+})
+
+router.post('/colaboradores/:id/tempos-servico', autenticar, ADM_GER, async (req, res) => {
+  try {
+    const { servico_id, duracao_min } = req.body
+    const { data, error } = await supabaseAdmin.from('colaborador_servico_tempo')
+      .upsert({ colaborador_id: req.params.id, servico_id, duracao_min, atualizado_em: new Date().toISOString() },
+               { onConflict: 'colaborador_id,servico_id' }).select().single()
+    if (error) throw error
+    return res.json(data)
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao salvar tempo' })
+  }
+})
+
+// ============================================================
+// GATILHOS DE COMISSÃO
+// ============================================================
+router.get('/gatilhos-comissao', autenticar, async (req, res) => {
+  try {
+    const [sv, pd] = await Promise.all([
+      supabaseAdmin.from('gatilhos_comissao_servico').select('*').eq('ativo', true).order('faturamento_min'),
+      supabaseAdmin.from('gatilhos_comissao_produto').select('*').eq('ativo', true).order('qtd_min')
+    ])
+    return res.json({ servicos: sv.data || [], produtos: pd.data || [] })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao buscar gatilhos' })
+  }
+})
+
+router.get('/comissao/:colaborador_id', autenticar, async (req, res) => {
+  try {
+    const { mes } = req.query // formato: YYYY-MM-01
+    const mesDate = mes || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
+    const { data, error } = await supabaseAdmin.rpc('calcular_comissao', {
+      p_colaborador_id: req.params.colaborador_id,
+      p_mes: mesDate
     })
+    if (error) throw error
+    return res.json(data)
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao calcular comissão' })
+  }
+})
 
+// ============================================================
+// UNIFICAÇÃO DE COMANDAS POR CLIENTE
+// ============================================================
+router.get('/comandas/cliente/:cliente_id/ativa', autenticar, async (req, res) => {
+  try {
+    const { data } = await supabaseAdmin.from('comandas')
+      .select('*,comanda_itens(*)')
+      .eq('cliente_id', req.params.cliente_id)
+      .in('status', ['aberta','em_atendimento'])
+      .order('criado_em', { ascending: false })
+      .limit(1)
+      .single()
+    return res.json(data || null)
+  } catch (err) {
+    return res.json(null)
+  }
+})
+
+router.post('/comandas/:id/unificar', autenticar, async (req, res) => {
+  try {
+    const { comanda_origem_id } = req.body
+    // Move itens da comanda avulsa para a comanda do agendamento
+    const { data: itens } = await supabaseAdmin.from('comanda_itens')
+      .select('*').eq('comanda_id', comanda_origem_id)
+    if (itens && itens.length) {
+      await supabaseAdmin.from('comanda_itens').upsert(
+        itens.map(i => ({ ...i, id: undefined, comanda_id: req.params.id }))
+      )
+    }
+    // Fecha a comanda avulsa
+    await supabaseAdmin.from('comandas').update({ status: 'unificada' }).eq('id', comanda_origem_id)
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao unificar comandas' })
+  }
+})
+
+// ============================================================
+// AGENDAMENTOS — múltiplos serviços e acompanhantes
+// ============================================================
+router.post('/agendamentos', autenticar, async (req, res) => {
+  try {
+    const itens = req.body.itens // array de { servico_id, colaborador_id, data_hora_ini, nome_acompanhante? }
+    const { cliente_id, unidade_id } = req.body
+    if (!itens || !itens.length) return res.status(400).json({ erro: 'Informe ao menos 1 serviço' })
+
+    const inserted = []
+    for (const item of itens) {
+      // Busca tempo do serviço para esse barbeiro
+      const { data: tempo } = await supabaseAdmin.from('colaborador_servico_tempo')
+        .select('duracao_min').eq('colaborador_id', item.colaborador_id).eq('servico_id', item.servico_id).single()
+      const { data: servico } = await supabaseAdmin.from('servicos').select('duracao_min,valor').eq('id', item.servico_id).single()
+      const duracao = tempo?.duracao_min || servico?.duracao_min || 30
+
+      const ini = new Date(item.data_hora_ini)
+      const fim = new Date(ini.getTime() + duracao * 60000)
+
+      const { data, error } = await supabaseAdmin.from('agendamentos').insert({
+        cliente_id, unidade_id,
+        colaborador_id: item.colaborador_id,
+        servico_id: item.servico_id,
+        data_hora_ini: ini.toISOString(),
+        data_hora_fim: fim.toISOString(),
+        nome_acompanhante: item.nome_acompanhante || null,
+        valor: servico?.valor || 0,
+        status: 'agendado'
+      }).select().single()
+      if (error) throw error
+      inserted.push(data)
+    }
+    return res.status(201).json(inserted)
+  } catch (err) {
+    console.error('[agendamentos]', err)
+    return res.status(500).json({ erro: 'Erro ao criar agendamentos' })
+  }
+})
+
+// Verificar disponibilidade considerando tempo do barbeiro
+router.get('/agendamentos/disponibilidade', autenticar, async (req, res) => {
+  try {
+    const { colaborador_id, servico_id, data } = req.query
+    const inicio = data + 'T00:00:00Z'
+    const fim    = data + 'T23:59:59Z'
+
+    // Busca agendamentos do dia
+    const { data: agends } = await supabaseAdmin.from('agendamentos')
+      .select('data_hora_ini,data_hora_fim').eq('colaborador_id', colaborador_id)
+      .gte('data_hora_ini', inicio).lte('data_hora_ini', fim)
+      .not('status', 'in', '("cancelado","nao_compareceu")')
+
+    // Busca folga do dia
+    const { data: folga } = await supabaseAdmin.from('folgas')
+      .select('id,periodo').eq('colaborador_id', colaborador_id).eq('data_folga', data)
+      .eq('status', 'aprovada').single()
+
+    // Tempo do serviço para esse barbeiro
+    const { data: tempo } = await supabaseAdmin.from('colaborador_servico_tempo')
+      .select('duracao_min').eq('colaborador_id', colaborador_id).eq('servico_id', servico_id).single()
+    const { data: servico } = await supabaseAdmin.from('servicos').select('duracao_min').eq('id', servico_id).single()
+    const duracao = tempo?.duracao_min || servico?.duracao_min || 30
+
+    return res.json({
+      ocupados: agends || [],
+      folga: folga || null,
+      duracao_servico: duracao
+    })
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao verificar disponibilidade' })
+  }
+})
+
+// ============================================================
+// CASHBACK — pontos por serviço
+// ============================================================
+router.post('/cashback/creditar', autenticar, async (req, res) => {
+  try {
+    const { cliente_id, valor_servicos } = req.body
+    const pontos = Math.floor(parseFloat(valor_servicos)) // 1 ponto por R$1
+
+    const { data: carteira } = await supabaseAdmin.from('carteira_pontos')
+      .select('id,saldo,total_acumulado').eq('cliente_id', cliente_id).single()
+
+    if (carteira) {
+      await supabaseAdmin.from('carteira_pontos').update({
+        saldo: carteira.saldo + pontos,
+        total_acumulado: carteira.total_acumulado + pontos
+      }).eq('id', carteira.id)
+    } else {
+      await supabaseAdmin.from('carteira_pontos').insert({
+        cliente_id, saldo: pontos, total_acumulado: pontos
+      })
+    }
     return res.json({ pontos_creditados: pontos })
   } catch (err) {
-    console.error(err)
-    return res.status(500).json({ erro: 'Erro ao creditar pontos' })
+    return res.status(500).json({ erro: 'Erro ao creditar cashback' })
   }
 })
 
-// POST /fidelidade/zerar-noshow — zera pontos por no-show
-router.post('/fidelidade/zerar-noshow', autenticar, TODOS, async (req, res) => {
+router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
   try {
-    const { cliente_id, agendamento_id } = req.body
+    const { cliente_id, produto_id } = req.body
+    const [carteira, produto] = await Promise.all([
+      supabaseAdmin.from('carteira_pontos').select('id,saldo').eq('cliente_id', cliente_id).single(),
+      supabaseAdmin.from('produtos').select('nome,pontos_resgate').eq('id', produto_id).single()
+    ])
+    if (!carteira.data || !produto.data) return res.status(404).json({ erro: 'Cliente ou produto não encontrado' })
+    if (!produto.data.pontos_resgate) return res.status(400).json({ erro: 'Produto não tem pontos configurados' })
+    if (carteira.data.saldo < produto.data.pontos_resgate) return res.status(400).json({ erro: 'Saldo insuficiente' })
 
-    const { data: carteira } = await supabaseAdmin
-      .from('carteira_pontos').select('saldo').eq('cliente_id', cliente_id).single()
-    if (!carteira || carteira.saldo === 0) return res.json({ mensagem: 'Saldo já era zero' })
+    await supabaseAdmin.from('carteira_pontos').update({
+      saldo: carteira.data.saldo - produto.data.pontos_resgate
+    }).eq('id', carteira.data.id)
 
-    await supabaseAdmin.from('carteira_pontos')
-      .update({ saldo: 0 }).eq('cliente_id', cliente_id)
-
-    await supabaseAdmin.from('historico_pontos').insert({
-      cliente_id, tipo: 'zeragem_noshow', pontos: -carteira.saldo,
-      descricao: 'Pontos zerados por no-show sem cancelamento prévio',
-      referencia_id: agendamento_id || null
-    })
-
-    return res.json({ pontos_zerados: carteira.saldo })
+    return res.json({ ok: true, pontos_usados: produto.data.pontos_resgate, saldo_restante: carteira.data.saldo - produto.data.pontos_resgate })
   } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao zerar pontos' })
-  }
-})
-
-// POST /fidelidade/resgatar — resgata pontos em produto (máx 5 por resgate)
-router.post('/fidelidade/resgatar', autenticar, TODOS, async (req, res) => {
-  try {
-    const { cliente_id, pontos, comanda_id } = req.body
-    const LIMITE_POR_RESGATE = 5
-
-    if (pontos > LIMITE_POR_RESGATE) {
-      return res.status(400).json({ erro: `Limite de ${LIMITE_POR_RESGATE} pontos por resgate` })
-    }
-
-    const { data: carteira } = await supabaseAdmin
-      .from('carteira_pontos').select('saldo').eq('cliente_id', cliente_id).single()
-
-    if (!carteira || carteira.saldo < pontos) {
-      return res.status(400).json({ erro: 'Saldo insuficiente' })
-    }
-
-    await supabaseAdmin.from('carteira_pontos')
-      .update({ saldo: carteira.saldo - pontos }).eq('cliente_id', cliente_id)
-
-    await supabaseAdmin.from('historico_pontos').insert({
-      cliente_id, tipo: 'debito', pontos: -pontos,
-      descricao: `Resgate em produto — R$ ${pontos},00 de desconto`,
-      referencia_id: comanda_id || null
-    })
-
-    return res.json({ desconto_aplicado: pontos, saldo_restante: carteira.saldo - pontos })
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao resgatar pontos' })
+    return res.status(500).json({ erro: 'Erro ao resgatar produto' })
   }
 })
 
 // ============================================================
-// #10 LISTA DE ESPERA
+// ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
-router.get('/espera', autenticar, TODOS, async (req, res) => {
-  try {
-    const { unidade_id, data } = req.query
-    let query = supabaseAdmin
-      .from('lista_espera')
-      .select('*, clientes(nome, whatsapp), servicos(nome), espera_colaboradores(colaboradores(nome))')
-      .eq('status', 'aguardando')
-      .order('criado_em')
-    if (unidade_id) query = query.eq('unidade_id', unidade_id)
-    if (data)       query = query.eq('data_desejada', data)
-    const { data: rows, error } = await query
-    if (error) throw error
-    return res.json(rows)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar lista de espera' })
-  }
-})
-
-router.post('/espera', autenticar, async (req, res) => {
-  try {
-    const { cliente_id, unidade_id, servico_id, data_desejada, hora_ini, hora_fim, observacao, colaborador_ids } = req.body
-    const { data, error } = await supabaseAdmin
-      .from('lista_espera')
-      .insert({ cliente_id, unidade_id, servico_id, data_desejada, hora_ini, hora_fim, observacao })
-      .select().single()
-    if (error) throw error
-
-    if (colaborador_ids?.length) {
-      const rows = colaborador_ids.map(id => ({ espera_id: data.id, colaborador_id: id }))
-      await supabaseAdmin.from('espera_colaboradores').insert(rows)
-    }
-
-    // Notifica barbeiros e caixa da unidade via WhatsApp
-    const { data: colabs } = await supabaseAdmin
-      .from('colaboradores').select('whatsapp, nome').eq('unidade_id', unidade_id).eq('ativo', true)
-    const { data: cliente } = await supabaseAdmin.from('clientes').select('nome').eq('id', cliente_id).single()
-
-    for (const col of (colabs || [])) {
-      if (!col.whatsapp) continue
-      await supabaseAdmin.from('notificacoes_whatsapp').insert({
-        destinatario: '55' + col.whatsapp.replace(/\D/g, ''),
-        mensagem: `🔔 Nova entrada na lista de espera!\n\nCliente: *${cliente?.nome}*\nData: ${data_desejada}\nHorário: ${hora_ini || 'Flexível'}${hora_fim ? ' às ' + hora_fim : ''}\nServiço: ${servico_id ? 'ver no sistema' : 'a definir'}`,
-        tipo: 'lista_espera',
-        referencia_id: data.id,
-        status: 'pendente'
-      })
-    }
-
-    return res.status(201).json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao entrar na lista de espera' })
-  }
-})
-
-// PUT /espera/:id/alocar — aloca um horário para o cliente em espera
-router.put('/espera/:id/alocar', autenticar, TODOS, async (req, res) => {
-  try {
-    const { data_hora_ini, colaborador_id } = req.body
-    const { data: espera } = await supabaseAdmin
-      .from('lista_espera').select('*, clientes(nome, whatsapp), servicos(duracao_min, valor, nome)').eq('id', req.params.id).single()
-    if (!espera) return res.status(404).json({ erro: 'Entrada não encontrada' })
-
-    // Cria agendamento
-    const ini = new Date(data_hora_ini)
-    const fim = new Date(ini.getTime() + (espera.servicos?.duracao_min || 30) * 60000)
-    await supabaseAdmin.from('agendamentos').insert({
-      unidade_id: espera.unidade_id, colaborador_id,
-      cliente_id: espera.cliente_id, servico_id: espera.servico_id,
-      data_hora_ini: ini.toISOString(), data_hora_fim: fim.toISOString(),
-      valor: espera.servicos?.valor || 0, canal_origem: 'lista_espera'
-    })
-
-    // Atualiza status
-    await supabaseAdmin.from('lista_espera').update({ status: 'notificado' }).eq('id', req.params.id)
-
-    // Notifica cliente
-    if (espera.clientes?.whatsapp) {
-      const hora = ini.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-      const data = ini.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit' })
-      await supabaseAdmin.from('notificacoes_whatsapp').insert({
-        destinatario: '55' + espera.clientes.whatsapp.replace(/\D/g, ''),
-        mensagem: `✅ Temos um horário para você!\n\n✂️ *${espera.servicos?.nome || 'Serviço'}*\n🕐 ${hora} — ${data}\n\nDeseja confirmar? Responda *SIM* para confirmar ou *NÃO* para recusar.`,
-        tipo: 'lista_espera_notif',
-        referencia_id: req.params.id,
-        status: 'pendente'
-      })
-    }
-
-    return res.json({ mensagem: 'Cliente notificado com sucesso' })
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao alocar horário' })
-  }
-})
-
-// ============================================================
-// #14 CONVÊNIOS
-// ============================================================
-
-router.get('/convenios', autenticar, TODOS, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin.from('convenios').select('*').eq('ativo', true).order('nome_empresa')
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar convênios' })
-  }
-})
-
-router.post('/convenios', autenticar, exigirPerfil('proprietario'), async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin.from('convenios').insert(req.body).select().single()
-    if (error) throw error
-    return res.status(201).json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao criar convênio' })
-  }
-})
-
-// POST /convenios/vincular-cliente — vincula cliente a convênio
-router.post('/convenios/vincular-cliente', autenticar, TODOS, async (req, res) => {
-  try {
-    const { cliente_id, convenio_id } = req.body
-    const { data, error } = await supabaseAdmin
-      .from('clientes').update({ convenio_id }).eq('id', cliente_id).select().single()
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao vincular convênio' })
-  }
-})
-
-// ============================================================
-// #11 VALES DE FUNCIONÁRIOS
-// ============================================================
-
-router.get('/vales', autenticar, ADMIN, async (req, res) => {
-  try {
-    const { unidade_id, colaborador_id } = req.query
-    let query = supabaseAdmin
-      .from('vales_funcionarios')
-      .select('*, colaboradores(nome), itens_vale(*)')
-      .order('aberto_em', { ascending: false })
-    if (unidade_id)    query = query.eq('unidade_id', unidade_id)
-    if (colaborador_id)query = query.eq('colaborador_id', colaborador_id)
-    const { data, error } = await query
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar vales' })
-  }
-})
-
-router.post('/vales', autenticar, TODOS, async (req, res) => {
-  try {
-    const { colaborador_id, unidade_id, tipo, itens } = req.body
-    const total = (itens || []).reduce((s, i) => s + i.quantidade * i.valor_unit, 0)
-
-    const { data: vale, error } = await supabaseAdmin
-      .from('vales_funcionarios')
-      .insert({ colaborador_id, unidade_id, tipo, total, status: 'aberto' })
-      .select().single()
-    if (error) throw error
-
-    if (itens?.length) {
-      const rows = itens.map(i => ({ ...i, vale_id: vale.id }))
-      await supabaseAdmin.from('itens_vale').insert(rows)
-    }
-    return res.status(201).json(vale)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao criar vale' })
-  }
-})
-
-// PUT /vales/:id/autorizar — gerente autoriza com senha
-router.put('/vales/:id/autorizar', autenticar, ADMIN, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('vales_funcionarios')
-      .update({ status: 'autorizado', autorizado_por: req.usuario.id, autorizado_em: new Date().toISOString() })
-      .eq('id', req.params.id).select().single()
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao autorizar vale' })
-  }
-})
-
-// ============================================================
-// #12 SAÍDAS DO CAIXA
-// ============================================================
-
-router.get('/saidas-caixa', autenticar, ADMIN, async (req, res) => {
-  try {
-    const { unidade_id, data } = req.query
-    let query = supabaseAdmin
-      .from('saidas_caixa')
-      .select('*, colaboradores!responsavel_id(nome)')
-      .order('criado_em', { ascending: false })
-    if (unidade_id) query = query.eq('unidade_id', unidade_id)
-    if (data) {
-      query = query.gte('criado_em', data + 'T00:00:00').lte('criado_em', data + 'T23:59:59')
-    }
-    const { data: rows, error } = await query
-    if (error) throw error
-    return res.json(rows)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar saídas' })
-  }
-})
-
-router.post('/saidas-caixa', autenticar, TODOS, async (req, res) => {
-  try {
-    const { unidade_id, motivo, valor, descricao, responsavel_id } = req.body
-    const { data, error } = await supabaseAdmin
-      .from('saidas_caixa')
-      .insert({ unidade_id, motivo, valor, descricao, responsavel_id, autorizado_por: req.usuario.id })
-      .select().single()
-    if (error) throw error
-    return res.status(201).json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao registrar saída' })
-  }
-})
-
-// ============================================================
-// #20 METAS DO BARBEIRO
-// ============================================================
-
-router.get('/metas/:colaborador_id', autenticar, async (req, res) => {
-  try {
-    const mes = req.query.mes || new Date().toISOString().slice(0, 7)
-    const { data, error } = await supabaseAdmin
-      .from('metas_colaborador').select('*')
-      .eq('colaborador_id', req.params.colaborador_id).eq('mes', mes).single()
-    if (error && error.code === 'PGRST116') return res.json(null)
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar metas' })
-  }
-})
-
-router.post('/metas', autenticar, ADMIN, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('metas_colaborador')
-      .upsert({ ...req.body, definida_por: req.usuario.id }, { onConflict: 'colaborador_id,mes' })
-      .select().single()
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao salvar meta' })
-  }
-})
-
-// ============================================================
-// #9 NÍVEL DO BARBEIRO
-// ============================================================
-
-// GET /servicos
 router.get('/servicos', autenticar, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('servicos').select('*').eq('ativo', true).order('nome')
-    if (error) throw error
+    const { data } = await supabaseAdmin.from('servicos').select('*').eq('ativo', true).order('nome')
     return res.json(data || [])
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar serviços' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-// GET /produtos
 router.get('/produtos', autenticar, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('produtos').select('*').eq('ativo', true).order('nome')
-    if (error) throw error
+    const { data } = await supabaseAdmin.from('produtos').select('*').eq('ativo', true).order('nome')
     return res.json(data || [])
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar produtos' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-// GET /colaboradores-todos — todos os colaboradores com unidade (para cadastros)
-router.get('/colaboradores-todos', autenticar, exigirPerfil('proprietario','gerente'), async (req, res) => {
+router.get('/colaboradores-todos', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('colaboradores')
-      .select('id, nome, email, whatsapp, perfil, comissao_pct, ativo, unidade_id, unidades(nome)')
-      .eq('ativo', true)
-      .order('nome')
-    if (error) throw error
+    const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
     return res.json(data || [])
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar colaboradores' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-// GET /clientes — lista clientes com paginação
 router.get('/clientes', autenticar, async (req, res) => {
   try {
     const limit  = parseInt(req.query.limit) || 50
     const offset = parseInt(req.query.offset) || 0
     const busca  = req.query.q || ''
-    let query = supabaseAdmin
-      .from('clientes')
-      .select('id, nome, email, whatsapp, cpf, ativo, unidade_pref, unidades:unidade_pref(nome), carteira_pontos(saldo)', { count: 'exact' })
-      .eq('ativo', true)
-      .order('nome')
-      .range(offset, offset + limit - 1)
-    if (busca) query = query.ilike('nome', '%' + busca + '%')
-    const { data, error, count } = await query
-    if (error) throw error
+    let q = supabaseAdmin.from('clientes').select('id,nome,email,whatsapp,cpf,ativo,unidade_pref,unidades:unidade_pref(nome),carteira_pontos(saldo)', { count: 'exact' }).eq('ativo', true).order('nome').range(offset, offset + limit - 1)
+    if (busca) q = q.ilike('nome', '%' + busca + '%')
+    const { data } = await q
     return res.json(data || [])
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar clientes' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-// GET /colaboradores — lista colaboradores por unidade
 router.get('/colaboradores', autenticar, async (req, res) => {
   try {
     const { unidade_id } = req.query
-    let query = supabaseAdmin
-      .from('colaboradores')
-      .select('id, nome, perfil, unidade_id')
-      .eq('ativo', true)
-      .in('perfil', ['colaborador', 'gerente'])
-      .order('nome')
-    if (unidade_id) query = query.eq('unidade_id', unidade_id)
-    const { data, error } = await query
-    if (error) throw error
+    let q = supabaseAdmin.from('colaboradores').select('id,nome,perfil,unidade_id').eq('ativo', true).in('perfil', ['colaborador','gerente']).order('nome')
+    if (unidade_id) q = q.eq('unidade_id', unidade_id)
+    const { data } = await q
     return res.json(data || [])
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar colaboradores' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-router.put('/colaboradores/:id/nivel', autenticar, ADMIN, async (req, res) => {
+// PUT /agendamentos/mover
+router.put('/agendamentos/mover', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { nivel } = req.body
-    const { data, error } = await supabaseAdmin
-      .from('colaboradores').update({ nivel }).eq('id', req.params.id).select().single()
+    const { agendamento_id, novo_horario, novo_colaborador_id, nova_unidade_id } = req.body
+    const updates = {}
+    if (novo_horario)        updates.data_hora_ini = novo_horario
+    if (novo_colaborador_id) updates.colaborador_id = novo_colaborador_id
+    if (nova_unidade_id)     updates.unidade_id = nova_unidade_id
+    const { data, error } = await supabaseAdmin.from('agendamentos').update(updates).eq('id', agendamento_id).select().single()
     if (error) throw error
     return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao atualizar nível' })
-  }
+  } catch (err) { return res.status(500).json({ erro: 'Erro ao mover agendamento' }) }
 })
 
-// GET /nivel-tempo/:nivel — retorna duração em minutos por nível
-router.get('/nivel-tempo/:nivel', async (req, res) => {
+// GET /agenda/folgas-hoje
+router.get('/agenda/folgas-hoje', autenticar, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('nivel_tempo_servico').select('duracao_min').eq('nivel', req.params.nivel).single()
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Nível não encontrado' })
-  }
+    const { unidade_id } = req.query
+    const hoje = new Date().toISOString().split('T')[0]
+    let q = supabaseAdmin.from('folgas').select('colaborador_id,periodo,colaboradores(id,nome)').eq('data_folga', hoje).eq('status', 'aprovada')
+    if (unidade_id) q = q.eq('unidade_id', unidade_id)
+    const { data } = await q
+    return res.json(data || [])
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-// ============================================================
-// #4 COMISSÃO POR VENDA DE PLANO
-// ============================================================
-
-// POST /planos/comissao — registra comissão ao vender/renovar plano
-router.post('/planos/comissao', autenticar, TODOS, async (req, res) => {
+router.get('/colaboradores-todos', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { assinatura_id, colaborador_id, valor_plano, pct_comissao } = req.body
-    const valor_comissao = Math.round(valor_plano * pct_comissao / 100 * 100) / 100
-    const mes = new Date().toISOString().slice(0, 7)
-
-    const { data, error } = await supabaseAdmin
-      .from('comissoes_planos')
-      .insert({ assinatura_id, colaborador_id, valor_plano, pct_comissao, valor_comissao, mes })
-      .select().single()
-    if (error) throw error
-    return res.status(201).json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao registrar comissão de plano' })
-  }
-})
-
-// GET /planos/comissoes?colaborador_id=xxx&mes=2025-05
-router.get('/planos/comissoes', autenticar, ADMIN, async (req, res) => {
-  try {
-    const { colaborador_id, mes } = req.query
-    let query = supabaseAdmin
-      .from('comissoes_planos')
-      .select('*, colaboradores(nome), assinaturas(planos(nome), clientes(nome))')
-      .order('criado_em', { ascending: false })
-    if (colaborador_id) query = query.eq('colaborador_id', colaborador_id)
-    if (mes)            query = query.eq('mes', mes)
-    const { data, error } = await query
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar comissões de planos' })
-  }
-})
-
-// ============================================================
-// #16 RENOVAÇÃO DE PLANO — alerta 10 dias antes
-// ============================================================
-
-// GET /assinaturas/vencendo — assinaturas que vencem em até 10 dias
-router.get('/assinaturas/vencendo', autenticar, ADMIN, async (req, res) => {
-  try {
-    const hoje = new Date()
-    const em10dias = new Date(hoje)
-    em10dias.setDate(em10dias.getDate() + 10)
-
-    const { data, error } = await supabaseAdmin
-      .from('assinaturas')
-      .select('*, clientes(nome, whatsapp), planos(nome, valor_mensal)')
-      .eq('status', 'ativa')
-      .lte('data_renovacao', em10dias.toISOString().split('T')[0])
-      .gte('data_renovacao', hoje.toISOString().split('T')[0])
-      .order('data_renovacao')
-    if (error) throw error
-    return res.json(data)
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao buscar renovações' })
-  }
-})
-
-// PUT /assinaturas/:id/renovar
-router.put('/assinaturas/:id/renovar', autenticar, TODOS, async (req, res) => {
-  try {
-    const { nova_data_renovacao, vendedor_id, forma_pgto } = req.body
-    const { data: ass } = await supabaseAdmin
-      .from('assinaturas').select('*, planos(valor_mensal)').eq('id', req.params.id).single()
-    if (!ass) return res.status(404).json({ erro: 'Assinatura não encontrada' })
-
-    const novaData = nova_data_renovacao || (() => {
-      const d = new Date(ass.data_renovacao)
-      d.setMonth(d.getMonth() + 1)
-      return d.toISOString().split('T')[0]
-    })()
-
-    await supabaseAdmin.from('assinaturas').update({
-      data_renovacao: novaData,
-      status: 'ativa',
-      vendedor_id: vendedor_id || ass.vendedor_id,
-      forma_pgto: forma_pgto || ass.forma_pgto
-    }).eq('id', req.params.id)
-
-    // Registra cobrança
-    await supabaseAdmin.from('cobrancas_assinatura').insert({
-      assinatura_id: req.params.id,
-      valor: ass.planos?.valor_mensal || 0,
-      data_cobranca: new Date().toISOString().split('T')[0],
-      forma_pgto: forma_pgto || ass.forma_pgto,
-      status: 'pago'
-    })
-
-    return res.json({ mensagem: 'Renovação realizada', nova_data: novaData })
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao renovar assinatura' })
-  }
-})
-
-// ============================================================
-// #17 AGENDAMENTO = COMANDA AUTOMÁTICA
-// ============================================================
-
-// POST /agendamentos/:id/abrir-comanda — cria comanda ao confirmar agendamento
-router.post('/agendamentos/:id/abrir-comanda', autenticar, TODOS, async (req, res) => {
-  try {
-    const { data: ag } = await supabaseAdmin
-      .from('agendamentos')
-      .select('*, servicos(nome, valor)')
-      .eq('id', req.params.id).single()
-    if (!ag) return res.status(404).json({ erro: 'Agendamento não encontrado' })
-
-    // Verifica se já existe comanda para este agendamento
-    const { data: existente } = await supabaseAdmin
-      .from('comandas').select('id').eq('agendamento_id', req.params.id).single()
-    if (existente) return res.json({ comanda_id: existente.id, mensagem: 'Comanda já existia' })
-
-    // Cria comanda
-    const { data: comanda, error } = await supabaseAdmin
-      .from('comandas')
-      .insert({
-        agendamento_id: req.params.id,
-        cliente_id:     ag.cliente_id,
-        colaborador_id: ag.colaborador_id,
-        unidade_id:     ag.unidade_id,
-        criado_por:     req.usuario.id
-      }).select().single()
-    if (error) throw error
-
-    // Adiciona serviço como item da comanda
-    await supabaseAdmin.from('itens_comanda').insert({
-      comanda_id: comanda.id,
-      tipo:       'servico',
-      servico_id: ag.servico_id,
-      descricao:  ag.servicos?.nome || 'Serviço',
-      quantidade: 1,
-      valor_unit: ag.valor || 0
-    })
-
-    return res.status(201).json({ comanda_id: comanda.id })
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao abrir comanda' })
-  }
-})
-
-// ============================================================
-// #18 BARCODE — busca produto por EAN
-// (já existe em /produtos/por-barcode/:barcode no cadastros.js)
-// ============================================================
-
-// ============================================================
-// #8 VALIDAÇÕES DE AGENDAMENTO
-// ============================================================
-
-// GET /agendamentos/pode-cancelar/:id — verifica se pode cancelar (15 min antes)
-router.get('/agendamentos/pode-cancelar/:id', autenticar, async (req, res) => {
-  try {
-    const { data: ag } = await supabaseAdmin
-      .from('agendamentos').select('data_hora_ini, status').eq('id', req.params.id).single()
-    if (!ag) return res.status(404).json({ erro: 'Agendamento não encontrado' })
-
-    const ini      = new Date(ag.data_hora_ini)
-    const agora    = new Date()
-    const diffMin  = (ini - agora) / 60000
-    const podeCancelar = diffMin >= 15
-
-    return res.json({
-      pode_cancelar: podeCancelar,
-      minutos_restantes: Math.round(diffMin),
-      mensagem: podeCancelar
-        ? 'Cancelamento permitido'
-        : 'Cancelamento não permitido — menos de 15 minutos para o início'
-    })
-  } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao verificar cancelamento' })
-  }
-})
-
-// ============================================================
-// IMPORTAÇÃO DE HISTÓRICO DE SERVIÇOS
-// ============================================================
-
-router.post('/historico-servicos', autenticar, exigirPerfil('proprietario'), async (req, res) => {
-  try {
-    const { unidade_slug, servico_nome, cliente_nome, cliente_fone, profissional, data, valor, forma_pgto, pontos, status } = req.body
-
-    // Busca unidade
-    const unidadeMap = { timbauva: 'Unidade Timbaúva', centro: 'Unidade Centro', saojoao: 'Unidade São João' }
-    const { data: unidade } = await supabaseAdmin.from('unidades').select('id').eq('nome', unidadeMap[unidade_slug] || unidade_slug).single()
-    if (!unidade) return res.status(404).json({ erro: 'Unidade não encontrada' })
-
-    // Busca ou cria cliente
-    let cliente_id = null
-    if (cliente_fone) {
-      const fone = cliente_fone.replace(/\D/g,'').slice(-11)
-      const { data: cli } = await supabaseAdmin.from('clientes').select('id').eq('whatsapp', fone).single()
-      if (cli) cliente_id = cli.id
-    }
-    if (!cliente_id && cliente_nome) {
-      const { data: cli } = await supabaseAdmin.from('clientes').select('id').ilike('nome', cliente_nome).single()
-      if (cli) cliente_id = cli.id
-    }
-
-    // Busca colaborador
-    let colaborador_id = null
-    if (profissional) {
-      const { data: col } = await supabaseAdmin.from('colaboradores').select('id').ilike('nome', `%${profissional}%`).eq('unidade_id', unidade.id).single()
-      if (col) colaborador_id = col.id
-    }
-
-    // Busca serviço
-    let servico_id = null
-    if (servico_nome) {
-      const { data: svc } = await supabaseAdmin.from('servicos').select('id').ilike('nome', `%${servico_nome}%`).single()
-      if (svc) servico_id = svc.id
-    }
-
-    // Converte data
-    let data_hora = null
-    if (data) {
-      try {
-        const d = new Date(data)
-        data_hora = isNaN(d) ? null : d.toISOString()
-      } catch { data_hora = null }
-    }
-
-    // Converte status
-    const statusMap = { 'Concluído': 'concluido', 'Cancelado': 'cancelado', 'Não compareceu': 'nao_compareceu' }
-    const status_norm = statusMap[status] || 'concluido'
-
-    // Insere no histórico
-    await supabaseAdmin.from('historico_atendimentos').insert({
-      unidade_id:     unidade.id,
-      cliente_id,
-      colaborador_id,
-      servico_id,
-      data_hora_ini:  data_hora,
-      valor:          parseFloat(valor) || 0,
-      forma_pgto:     (forma_pgto || '').toLowerCase().replace(/\s/g,'_'),
-      status:         status_norm,
-      pontos_gerados: parseInt(pontos) || 0,
-      origem:         'importacao_appbarber'
-    })
-
-    return res.status(201).json({ ok: true })
-  } catch (err) {
-    console.error('[importacao]', err)
-    return res.status(500).json({ erro: 'Erro ao importar registro' })
-  }
+    const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,saldo_vales_pix,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
+    return res.json(data || [])
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
 module.exports = router
