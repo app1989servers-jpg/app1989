@@ -365,13 +365,13 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // POST /agendamentos/bloquear — bloquear horário na agenda
 router.post('/agendamentos/bloquear', autenticar, async (req, res) => {
   try {
-    const { colaborador_id, data_hora_ini, data_hora_fim, motivo } = req.body
+    const { colaborador_id, data_hora_ini, data_hora_fim, unidade_id } = req.body
     const { data, error } = await supabaseAdmin.from('agendamentos').insert({
       colaborador_id,
       data_hora_ini,
       data_hora_fim,
-      status: 'bloqueado',
-      observacoes: motivo || 'Bloqueio manual'
+      unidade_id: unidade_id || null,
+      status: 'bloqueado'
     }).select().single()
     if (error) throw error
     return res.status(201).json(data)
@@ -469,7 +469,7 @@ router.get('/produtos', autenticar, async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-router.get('/colaboradores-todos', autenticar, ADM_GER, async (req, res) => {
+router.get('/colaboradores-todos', autenticar, TODOS, async (req, res) => {
   try {
     const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
     return res.json(data || [])
@@ -540,7 +540,7 @@ router.get('/agenda/folgas-hoje', autenticar, async (req, res) => {
   } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
 
-router.get('/colaboradores-todos', autenticar, ADM_GER, async (req, res) => {
+router.get('/colaboradores-todos', autenticar, TODOS, async (req, res) => {
   try {
     const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,saldo_vales_pix,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
     return res.json(data || [])
