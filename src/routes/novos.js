@@ -496,33 +496,45 @@ router.put('/colaboradores/:id', autenticar, ADM_GER, async (req, res) => {
   }
 })
 
-// GET /dashboard/agenda-dia — agenda de qualquer data
+// GET /dashboard/agenda-dia — agenda de qualquer data (estrutura flat)
 router.get('/dashboard/agenda-dia', autenticar, async (req, res) => {
   try {
-    const { data, unidade_id } = req.query
-    const dia = data || new Date().toISOString().split('T')[0]
-    const inicio = dia + 'T00:00:00Z'
-    const fim    = dia + 'T23:59:59Z'
+    const { data } = req.query
+    const dia = data || new Date().toLocaleString('en-CA', { timeZone: 'America/Sao_Paulo' }).split(',')[0]
 
     const { data: colab } = await supabaseAdmin
       .from('colaboradores').select('id,perfil,unidade_id').eq('user_id', req.usuario.id).single()
 
     let q = supabaseAdmin.from('agendamentos')
-      .select('id,data_hora_ini,data_hora_fim,status,valor,clientes(id,nome),servicos(nome),colaboradores(id,nome,unidade_id,unidades(nome))')
-      .gte('data_hora_ini', inicio).lte('data_hora_ini', fim)
+      .select('id,data_hora_ini,data_hora_fim,status,valor,colaboradores(id,nome,unidade_id,unidades(nome)),clientes(nome,whatsapp),servicos(nome,duracao_min)')
+      .gte('data_hora_ini', dia + 'T00:00:00-03:00')
+      .lte('data_hora_ini', dia + 'T23:59:59-03:00')
       .not('status', 'eq', 'cancelado')
       .order('data_hora_ini')
 
-    if(colab && colab.perfil === 'colaborador') {
-      q = q.eq('colaborador_id', colab.id)
-    } else if(colab && colab.perfil === 'gerente' && colab.unidade_id) {
-      q = q.eq('unidade_id', colab.unidade_id)
-    }
-    // caixa e proprietário: sem filtro, veem tudo
+    if(colab?.perfil === 'colaborador') q = q.eq('colaborador_id', colab.id)
+    else if(colab?.perfil === 'gerente' && colab?.unidade_id) q = q.eq('unidade_id', colab.unidade_id)
 
-    const { data: agenda } = await q
-    return res.json(agenda || [])
+    const { data: agenda, error } = await q
+    if(error) throw error
+
+    const flat = (agenda || []).map(a => ({
+      id:               a.id,
+      data_hora_ini:    a.data_hora_ini,
+      data_hora_fim:    a.data_hora_fim,
+      status:           a.status,
+      valor:            a.valor,
+      colaborador_id:   a.colaboradores?.id,
+      colaborador_nome: a.colaboradores?.nome,
+      unidade_nome:     a.colaboradores?.unidades?.nome,
+      cliente_nome:     a.clientes?.nome || null,
+      servico_nome:     a.servicos?.nome || null,
+      duracao_min:      a.servicos?.duracao_min || 30
+    }))
+
+    return res.json(flat)
   } catch(err) {
+    console.error('[agenda-dia]', err.message)
     return res.status(500).json({ erro: 'Erro ao buscar agenda' })
   }
 })
