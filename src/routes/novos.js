@@ -645,7 +645,7 @@ router.get('/agenda/folgas-hoje', autenticar, async (req, res) => {
 
 router.get('/colaboradores-todos', autenticar, TODOS, async (req, res) => {
   try {
-    const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,saldo_vales_pix,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
+    const { data } = await supabaseAdmin.from('colaboradores').select('id,nome,email,whatsapp,perfil,comissao_pct,saldo_vales_pix,foto_url,ativo,unidade_id,unidades(nome)').eq('ativo', true).order('nome')
     return res.json(data || [])
   } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
 })
