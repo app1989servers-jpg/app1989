@@ -362,6 +362,35 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
+// POST /colaboradores — criar novo colaborador
+router.post('/colaboradores', autenticar, ADM_GER, async (req, res) => {
+  try {
+    const { nome, email, whatsapp, perfil, ativo, data_nasc } = req.body
+    if (!nome || !email) return res.status(400).json({ erro: 'Nome e email são obrigatórios' })
+    const { data, error } = await supabaseAdmin.from('colaboradores')
+      .insert({ nome, email, whatsapp, perfil: perfil||'colaborador', ativo: ativo!==false, data_nasc })
+      .select().single()
+    if (error) throw error
+    return res.status(201).json(data)
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao criar colaborador' })
+  }
+})
+
+// PUT /colaboradores/:id — atualizar colaborador
+router.put('/colaboradores/:id', autenticar, ADM_GER, async (req, res) => {
+  try {
+    const { nome, email, whatsapp, perfil, ativo, data_nasc } = req.body
+    const { data, error } = await supabaseAdmin.from('colaboradores')
+      .update({ nome, email, whatsapp, perfil, ativo, data_nasc })
+      .eq('id', req.params.id).select().single()
+    if (error) throw error
+    return res.json(data)
+  } catch (err) {
+    return res.status(500).json({ erro: 'Erro ao atualizar colaborador' })
+  }
+})
+
 // GET /unidades
 router.get('/unidades', autenticar, async (req, res) => {
   try {
