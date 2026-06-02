@@ -365,29 +365,40 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // POST /colaboradores — criar novo colaborador
 router.post('/colaboradores', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { nome, email, whatsapp, perfil, ativo, data_nasc } = req.body
+    const { nome, email, whatsapp, perfil, ativo, data_nasc, comissao_pct } = req.body
     if (!nome || !email) return res.status(400).json({ erro: 'Nome e email são obrigatórios' })
-    const { data, error } = await supabaseAdmin.from('colaboradores')
-      .insert({ nome, email, whatsapp, perfil: perfil||'colaborador', ativo: ativo!==false, data_nasc })
-      .select().single()
-    if (error) throw error
+    const payload = { nome, email, perfil: perfil||'colaborador', ativo: ativo!==false }
+    if (whatsapp)    payload.whatsapp    = whatsapp
+    if (data_nasc)   payload.data_nasc   = data_nasc
+    if (comissao_pct) payload.comissao_pct = parseFloat(comissao_pct)
+    const { data, error } = await supabaseAdmin.from('colaboradores').insert(payload).select().single()
+    if (error) { console.error('[POST colaboradores]', error); throw error }
     return res.status(201).json(data)
   } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao criar colaborador' })
+    console.error('[POST colaboradores] catch:', err.message || err)
+    return res.status(500).json({ erro: err.message || 'Erro ao criar colaborador' })
   }
 })
 
 // PUT /colaboradores/:id — atualizar colaborador
 router.put('/colaboradores/:id', autenticar, ADM_GER, async (req, res) => {
   try {
-    const { nome, email, whatsapp, perfil, ativo, data_nasc } = req.body
+    const { nome, email, whatsapp, perfil, ativo, data_nasc, comissao_pct } = req.body
+    const payload = {}
+    if (nome)        payload.nome        = nome
+    if (email)       payload.email       = email
+    if (whatsapp)    payload.whatsapp    = whatsapp
+    if (perfil)      payload.perfil      = perfil
+    if (ativo !== undefined) payload.ativo = ativo
+    if (data_nasc)   payload.data_nasc   = data_nasc
+    if (comissao_pct) payload.comissao_pct = parseFloat(comissao_pct)
     const { data, error } = await supabaseAdmin.from('colaboradores')
-      .update({ nome, email, whatsapp, perfil, ativo, data_nasc })
-      .eq('id', req.params.id).select().single()
-    if (error) throw error
+      .update(payload).eq('id', req.params.id).select().single()
+    if (error) { console.error('[PUT colaboradores]', error); throw error }
     return res.json(data)
   } catch (err) {
-    return res.status(500).json({ erro: 'Erro ao atualizar colaborador' })
+    console.error('[PUT colaboradores] catch:', err.message || err)
+    return res.status(500).json({ erro: err.message || 'Erro ao atualizar colaborador' })
   }
 })
 
