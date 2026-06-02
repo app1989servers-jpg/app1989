@@ -385,7 +385,7 @@ router.patch('/agendamentos/:id', autenticar, async (req, res) => {
   }
 })
 
-// POST /agendamentos/bloquear — bloquear horário na agenda (usa tabela folgas)
+// POST /agendamentos/bloquear — bloquear horário na agenda
 router.post('/agendamentos/bloquear', autenticar, async (req, res) => {
   try {
     const { colaborador_id, data_hora_ini, data_hora_fim, tipo } = req.body
@@ -393,42 +393,50 @@ router.post('/agendamentos/bloquear', autenticar, async (req, res) => {
 
     const data_folga = (data_hora_ini || new Date().toISOString()).split('T')[0]
 
-    // Determina período com base nos horários
-    let periodo = 'dia_todo'
-    if (data_hora_ini && data_hora_fim) {
-      const iniH = new Date(data_hora_ini).getHours()
-      const fimH = new Date(data_hora_fim).getHours()
-      if (fimH <= 12) periodo = 'manha'
-      else if (iniH >= 12) periodo = 'tarde'
-      else periodo = 'dia_todo'
-    }
-    if (tipo === 'slot')  periodo = 'horario'
-    if (tipo === 'manha') periodo = 'manha'
-    if (tipo === 'tarde') periodo = 'tarde'
-    if (tipo === 'dia')   periodo = 'dia_todo'
-
     // Busca unidade do colaborador
     const { data: colab } = await supabaseAdmin
       .from('colaboradores').select('unidade_id').eq('id', colaborador_id).single()
+    const unidade_id = colab?.unidade_id || null
 
-    const payload = {
-      colaborador_id,
-      data_folga,
-      periodo,
-      unidade_id: colab?.unidade_id || null,
-      status: 'aprovada',
-      obs: 'Bloqueio manual via agenda'
+    if (tipo === 'dia') {
+      // Dia todo → folga (upsert para não duplicar)
+      const { data: folgaExist } = await supabaseAdmin
+        .from('folgas').select('id').eq('colaborador_id', colaborador_id).eq('data_folga', data_folga).single()
+
+      if (folgaExist) {
+        // Já existe folga — atualiza para dia_todo
+        const { data, error } = await supabaseAdmin
+          .from('folgas').update({ periodo: 'dia_todo', status: 'aprovada' })
+          .eq('id', folgaExist.id).select().single()
+        if (error) throw error
+        return res.status(200).json(data)
+      } else {
+        const { data, error } = await supabaseAdmin.from('folgas').insert({
+          colaborador_id, data_folga, periodo: 'dia_todo',
+          unidade_id, status: 'aprovada', obs: 'Bloqueio via agenda'
+        }).select().single()
+        if (error) throw error
+        return res.status(201).json(data)
+      }
+    } else {
+      // Slot / manhã / tarde → insere agendamento de bloqueio
+      // Busca um servico_id válido para não violar NOT NULL
+      const { data: servico } = await supabaseAdmin
+        .from('servicos').select('id').eq('ativo', true).limit(1).single()
+      if (!servico) return res.status(400).json({ erro: 'Nenhum serviço cadastrado para usar como bloqueio' })
+
+      const { data, error } = await supabaseAdmin.from('agendamentos').insert({
+        colaborador_id,
+        unidade_id,
+        servico_id:    servico.id,
+        data_hora_ini: data_hora_ini,
+        data_hora_fim: data_hora_fim,
+        status:        'bloqueado',
+        valor:         0
+      }).select().single()
+      if (error) throw error
+      return res.status(201).json(data)
     }
-
-    // Para bloqueio de slot específico, guarda horário no obs
-    if (tipo === 'slot' && data_hora_ini) {
-      payload.obs = 'Bloqueio slot: ' + data_hora_ini + ' — ' + (data_hora_fim || '')
-      payload.periodo = 'horario'
-    }
-
-    const { data, error } = await supabaseAdmin.from('folgas').insert(payload).select().single()
-    if (error) throw error
-    return res.status(201).json(data)
   } catch (err) {
     console.error('[bloquear slot]', err.message)
     return res.status(500).json({ erro: err.message || 'Erro ao bloquear' })
