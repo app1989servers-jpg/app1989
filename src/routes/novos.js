@@ -371,6 +371,19 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
+// DELETE /agendamentos/:id — remover agendamento (bloqueio)
+router.delete('/agendamentos/:id', autenticar, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from('agendamentos').delete().eq('id', req.params.id)
+    if (error) throw error
+    return res.status(204).send()
+  } catch (err) {
+    console.error('[DELETE agendamento]', err.message)
+    return res.status(500).json({ erro: err.message })
+  }
+})
+
 // PATCH /agendamentos/:id — atualizar status (cancelar, etc)
 router.patch('/agendamentos/:id', autenticar, async (req, res) => {
   try {
@@ -495,12 +508,17 @@ router.get('/dashboard/agenda-dia', autenticar, async (req, res) => {
       .from('colaboradores').select('id,perfil,unidade_id').eq('user_id', req.usuario.id).single()
 
     let q = supabaseAdmin.from('agendamentos')
-      .select('id,data_hora_ini,data_hora_fim,status,valor,clientes(id,nome),servicos(nome),colaboradores(id,nome)')
-      .gte('data_hora_ini', inicio).lte('data_hora_ini', fim).order('data_hora_ini')
+      .select('id,data_hora_ini,data_hora_fim,status,valor,clientes(id,nome),servicos(nome),colaboradores(id,nome,unidade_id,unidades(nome))')
+      .gte('data_hora_ini', inicio).lte('data_hora_ini', fim)
+      .not('status', 'eq', 'cancelado')
+      .order('data_hora_ini')
 
-    if(unidade_id) q = q.eq('unidade_id', unidade_id)
-    else if(colab && colab.perfil === 'colaborador') q = q.eq('colaborador_id', colab.id)
-    else if(colab && colab.unidade_id) q = q.eq('unidade_id', colab.unidade_id)
+    if(colab && colab.perfil === 'colaborador') {
+      q = q.eq('colaborador_id', colab.id)
+    } else if(colab && colab.perfil === 'gerente' && colab.unidade_id) {
+      q = q.eq('unidade_id', colab.unidade_id)
+    }
+    // caixa e proprietário: sem filtro, veem tudo
 
     const { data: agenda } = await q
     return res.json(agenda || [])
