@@ -362,6 +362,14 @@ router.post('/cashback/resgatar-produto', autenticar, async (req, res) => {
 // ROTAS EXISTENTES MANTIDAS
 // ============================================================
 
+// GET /unidades
+router.get('/unidades', autenticar, async (req, res) => {
+  try {
+    const { data } = await supabaseAdmin.from('unidades').select('id,nome').order('nome')
+    return res.json(data || [])
+  } catch (err) { return res.status(500).json({ erro: 'Erro' }) }
+})
+
 router.get('/servicos', autenticar, async (req, res) => {
   try {
     const { data } = await supabaseAdmin.from('servicos').select('*').eq('ativo', true).order('nome')
