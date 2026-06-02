@@ -536,14 +536,15 @@ router.get('/clientes', autenticar, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0
     const busca  = (req.query.q || '').trim()
 
+    console.log('[clientes] busca=', busca, 'limit=', limit)
+
     let q = supabaseAdmin
       .from('clientes')
       .select('id,nome,email,whatsapp,cpf,ativo,carteira_pontos(saldo)')
       .eq('ativo', true)
       .order('nome')
 
-    if (busca) {
-      // Filtra por nome OU whatsapp
+    if (busca && busca.length >= 2) {
       q = q.or(`nome.ilike.%${busca}%,whatsapp.ilike.%${busca}%`)
     }
 
@@ -551,6 +552,7 @@ router.get('/clientes', autenticar, async (req, res) => {
 
     const { data, error } = await q
     if (error) throw error
+    console.log('[clientes] retornando', data ? data.length : 0, 'resultados')
     return res.json(data || [])
   } catch (err) {
     console.error('[clientes]', err.message)
