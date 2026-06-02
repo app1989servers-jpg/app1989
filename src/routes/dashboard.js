@@ -10,10 +10,11 @@ const { autenticar, exigirPerfil } = require('../middleware/auth')
 router.get('/dashboard/metricas', autenticar, async (req, res) => {
   try {
     const usuario = req.usuario
-    const hoje    = new Date()
-    const inicioHoje = new Date(hoje.setHours(0,0,0,0)).toISOString()
-    const fimHoje    = new Date(hoje.setHours(23,59,59,999)).toISOString()
-    const inicioMes  = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString()
+    const agora = new Date()
+    const anoHoje = agora.toLocaleString('en-CA', { timeZone: 'America/Sao_Paulo' }).split(',')[0]
+    const inicioHoje = anoHoje + 'T00:00:00-03:00'
+    const fimHoje    = anoHoje + 'T23:59:59-03:00'
+    const inicioMes  = anoHoje.slice(0,7) + '-01T00:00:00-03:00' 
 
     // Busca colaborador logado — tenta por user_id (Supabase Auth) ou id direto
     console.log('[dashboard] usuario:', JSON.stringify(usuario))
