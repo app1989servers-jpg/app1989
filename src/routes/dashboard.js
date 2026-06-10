@@ -161,7 +161,7 @@ router.get('/dashboard/metricas', autenticar, async (req, res) => {
 
     // ---- Top clientes do mês ----
     let qTop = supabaseAdmin.from('agendamentos')
-      .select('cliente_id, clientes(nome), colaboradores(nome), unidades(nome)')
+      .select('cliente_id, valor, clientes(nome), colaboradores(nome), unidades(nome)')
       .gte('data_hora_ini', inicioMes)
       .eq('status', 'concluido')
     if (perfil === 'colaborador') qTop = qTop.eq('colaborador_id', colab.id)
@@ -171,10 +171,15 @@ router.get('/dashboard/metricas', autenticar, async (req, res) => {
     const topMap = {}
     for (const a of (topAgends||[])) {
       const id = a.cliente_id
-      if (!topMap[id]) topMap[id] = { nome: a.clientes?.nome, barbeiro: a.colaboradores?.nome, unidade: a.unidades?.nome, visitas: 0 }
+      if (!id) continue
+      if (!topMap[id]) topMap[id] = { nome: a.clientes?.nome, barbeiro: a.colaboradores?.nome, unidade: a.unidades?.nome, visitas: 0, gasto: 0 }
       topMap[id].visitas++
+      topMap[id].gasto += parseFloat(a.valor) || 0
     }
-    result.top_clientes = Object.values(topMap).sort((a,b)=>b.visitas-a.visitas).slice(0,10)
+    result.top_clientes = Object.values(topMap)
+      .map(c => ({ ...c, gasto: Math.round(c.gasto*100)/100 }))
+      .sort((a,b) => b.gasto - a.gasto)
+      .slice(0,10)
 
     return res.json(result)
   } catch (err) {

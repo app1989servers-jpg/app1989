@@ -129,20 +129,26 @@ router.put('/colaboradores/:id', autenticar, exigirPerfil('proprietario'), async
 
 // ============ CLIENTES ============
 
-router.get('/clientes', autenticar, exigirPerfil('proprietario','gerente','caixa'), async (req, res) => {
+router.get('/clientes', autenticar, exigirPerfil('proprietario','gerente','caixa','colaborador'), async (req, res) => {
   try {
-    const { busca, unidade_id } = req.query
+    const termo = (req.query.q || req.query.busca || '').trim()
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100)
+
     let query = supabaseAdmin
       .from('clientes')
       .select('id, nome, email, whatsapp, cpf, ativo, criado_em, colaborador_pref, unidade_pref')
-      .eq('ativo', true).order('nome').limit(100)
+      .eq('ativo', true).order('nome').limit(limit)
 
-    if (busca) query = query.or(`nome.ilike.%${busca}%,whatsapp.ilike.%${busca}%,cpf.ilike.%${busca}%`)
+    if (termo.length >= 2) {
+      query = query.or(`nome.ilike.%${termo}%,whatsapp.ilike.%${termo}%,cpf.ilike.%${termo}%`)
+    }
 
     const { data, error } = await query
     if (error) throw error
+    console.log('[clientes] termo=', termo, 'limit=', limit, 'retornou', (data||[]).length)
     return res.json(data)
   } catch (err) {
+    console.error('[clientes]', err.message)
     return res.status(500).json({ erro: 'Erro ao buscar clientes' })
   }
 })
